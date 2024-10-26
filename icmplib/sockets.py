@@ -26,13 +26,14 @@
     <https://www.gnu.org/licenses/>.
 '''
 
-import socket, asyncio
+import socket, asyncio, fcntl, struct
+from socket import SO_BINDTODEVICE
 from struct import pack, unpack
 from time import time
 
 from .models import ICMPReply
 from .exceptions import *
-from .utils import PLATFORM_LINUX, PLATFORM_MACOS, PLATFORM_WINDOWS
+from .utils import PLATFORM_LINUX, PLATFORM_MACOS, PLATFORM_WINDOWS, is_ipv4_address, is_ipv6_address
 
 
 class ICMPSocket:
@@ -76,7 +77,6 @@ class ICMPSocket:
 
     def __init__(self, address=None, privileged=True):
         self._sock = None
-        self._address = address
 
         # The Linux kernel allows unprivileged users to use datagram
         # sockets (SOCK_DGRAM) to send ICMP requests. This feature is
@@ -90,7 +90,17 @@ class ICMPSocket:
                 socket.SOCK_DGRAM)
 
             if address:
-                self._sock.bind((address, 0))
+                if is_ipv4_address(address=address) or is_ipv6_address(address=address):
+                    self._sock.bind((address, 0))
+                    self._address = address
+                else:
+                    # attempt to parse the source as a device
+                    self._sock.setsockopt(socket.SOL_SOCKET, SO_BINDTODEVICE, str(address + '\0').encode('utf-8'))
+                    if PLATFORM_LINUX:
+                        # fetch the real address and assign it to the property
+                        packed_iface = struct.pack('256s', address.encode('utf-8'))
+                        packed_addr = fcntl.ioctl(self._sock.fileno(), 0x8915, packed_iface)[20:24]
+                        self._address = socket.inet_ntoa(packed_addr)
 
         except OSError as err:
             if err.errno in (1, 13, 10013):
